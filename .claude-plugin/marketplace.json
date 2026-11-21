@@ -1,0 +1,14 @@
+{
+  "name": "parsimon",
+  "owner": {
+    "name": "Muhammad Abdullah Noor",
+    "url": "https://github.com/abdullah-qadoos"
+  },
+  "plugins": [
+    {
+      "name": "parsimon",
+      "source": "./",
+      "description": "Cache-aware token governor for Claude Code: token ledger, boot audit, lean coding rules."
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parsimon"
+version = "0.1.0"
+description = "Cache-aware token governor for coding agents"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Muhammad Abdullah Noor" }]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+parsimon = "parsimon.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
