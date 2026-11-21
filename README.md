@@ -106,4 +106,6 @@ The reuse-before-you-write rules draw on the idea popularised by [Ponytail](http
 
 ## License
 
-MIT
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Released under the [MIT License](LICENSE).
