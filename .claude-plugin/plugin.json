@@ -1,13 +1,13 @@
 {
   "name": "parsimon",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Cache-aware token governor for coding agents: measures where your tokens go, slims the boot payload, and keeps the agent's code lean.",
   "author": {
     "name": "Muhammad Abdullah Noor",
     "url": "https://github.com/abdullah-qadoos"
   },
-  "homepage": "https://github.com/abdullah-qadoos/parsimon",
-  "repository": "https://github.com/abdullah-qadoos/parsimon",
+  "homepage": "https://github.com/abdullah-qadoos/parsimon-token-governor",
+  "repository": "https://github.com/abdullah-qadoos/parsimon-token-governor",
   "license": "MIT",
   "keywords": ["claude-code", "tokens", "cost", "prompt-cache", "code-quality"]
 }

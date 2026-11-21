@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .ledger import CACHE_TTL_SECONDS, _parse_time, _usage_numbers
+from .ledger import _parse_time, _usage_numbers, ttl_for
 
 TAIL_BYTES = 2_000_000
 HANDOFF_DIR = ".parsimon"
@@ -43,10 +43,11 @@ def _entries(transcript: str | Path, tail: bool = True):
 
 def snapshot(transcript: str | Path | None) -> dict:
     """Current context size, time of the last model turn, and touched files."""
-    info = {"context": 0, "last_turn": None, "files": []}
+    info = {"context": 0, "last_turn": None, "files": [], "ttl": ttl_for(0)}
     if not transcript:
         return info
     files: list[str] = []
+    write_1h = 0
     for e in _entries(transcript):
         msg = e.get("message")
         if e.get("type") != "assistant" or not isinstance(msg, dict):
@@ -55,6 +56,7 @@ def snapshot(transcript: str | Path | None) -> dict:
         if isinstance(usage, dict):
             n = _usage_numbers(usage)
             ctx = n["input"] + n["cache_write"] + n["cache_read"]
+            write_1h += n["cache_write_1h"]
             if ctx:
                 info["context"] = ctx
                 info["last_turn"] = _parse_time(e.get("timestamp")) or info["last_turn"]
@@ -71,6 +73,7 @@ def snapshot(transcript: str | Path | None) -> dict:
                     if fp and fp not in files:
                         files.append(fp)
     info["files"] = files
+    info["ttl"] = ttl_for(write_1h)
     return info
 
 
@@ -82,7 +85,7 @@ def idle_seconds(last_turn: datetime | None, now: datetime | None = None) -> flo
 
 
 def cache_expired(snap: dict, min_tokens: int, now: datetime | None = None) -> bool:
-    return snap["context"] >= min_tokens and idle_seconds(snap["last_turn"], now) > CACHE_TTL_SECONDS
+    return snap["context"] >= min_tokens and idle_seconds(snap["last_turn"], now) > snap.get("ttl", ttl_for(0))
 
 
 def is_prefix_file(path: str | None) -> bool:

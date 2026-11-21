@@ -142,3 +142,18 @@ def test_subagent_transcripts_count_under_their_project(transcripts):
     sessions = ledger.load_sessions(transcripts, project="shop", now=T0 + timedelta(hours=1))
     assert len(sessions) == 2
     assert {s.project for s in sessions} == {"-home-me-shop"}
+
+
+def test_one_hour_cache_writes_cost_more_and_use_a_longer_ttl(tmp_path):
+    def turn(mid, ts, cw):
+        return {"type": "assistant", "timestamp": ts.isoformat(), "message": {"id": mid, "usage": {
+            "input_tokens": 0, "cache_creation_input_tokens": cw, "cache_read_input_tokens": 0, "output_tokens": 0,
+            "cache_creation": {"ephemeral_1h_input_tokens": cw, "ephemeral_5m_input_tokens": 0}}}}
+    path = write_session(tmp_path, "h", [turn("a", T0, 30_000), turn("b", T0 + timedelta(minutes=13), 30_000),
+                                         turn("c", T0 + timedelta(minutes=80), 30_000)])
+    s = ledger.parse_session(path)
+    assert s.write_1h == 90_000 and s.ttl == 3600
+    assert s.cost() == pytest.approx(90_000 * 2.0)
+    assert [round(g) for _, g in s.cache_rebuilds()] == [67 * 60]  # the 13-min gap is not a rebuild
+    data = report.build([s])
+    assert data["cost"]["cache_write"] == pytest.approx(180_000) and data["write_1h_share"] == 1.0

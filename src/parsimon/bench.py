@@ -6,7 +6,8 @@ command passed. `compare` reports the median per-pair cost change with a bootstr
 confidence interval, plus success rates, so savings never come from failing tasks.
 
 tasks.json:
-  [{"id": "fix-price", "repo": "bench/repos/shop", "prompt": "...", "check": "pytest -q"}]
+  [{"id": "fix-price", "repo": "bench/repos/shop", "prompt": "...", "check": "{python} -m pytest -q"}]
+  {python} in check becomes the interpreter running the benchmark.
 """
 from __future__ import annotations
 
@@ -16,11 +17,12 @@ import random
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 
-from .ledger import CATEGORIES, DEFAULT_WEIGHTS
+from .ledger import DEFAULT_WEIGHTS, _usage_numbers, cost_of
 
 ARMS = ("baseline", "parsimon")
 ARM_MODE = {"baseline": "off", "parsimon": "full"}
@@ -36,17 +38,8 @@ def load_tasks(path: Path) -> list[dict]:
 
 
 def _usage_cost(usage: dict) -> float:
-    def g(k):
-        v = usage.get(k)
-        return v if isinstance(v, (int, float)) else 0
-
-    nums = {
-        "input": g("input_tokens"),
-        "cache_write": g("cache_creation_input_tokens"),
-        "cache_read": g("cache_read_input_tokens"),
-        "output": g("output_tokens"),
-    }
-    return sum(nums[c] * DEFAULT_WEIGHTS[c] for c in CATEGORIES)
+    nums = _usage_numbers(usage)
+    return cost_of(nums, nums.pop("cache_write_1h"), DEFAULT_WEIGHTS)
 
 
 def run_one(task: dict, arm: str, rep: int, base: Path, claude: str, extra_args: list[str], timeout: int) -> dict:
@@ -73,7 +66,7 @@ def run_one(task: dict, arm: str, rep: int, base: Path, claude: str, extra_args:
     row["cost_units"] = _usage_cost(usage)
     if task.get("check"):
         try:
-            c = subprocess.run(task["check"], cwd=work, shell=True, capture_output=True, timeout=300)
+            c = subprocess.run(task["check"].replace("{python}", f'"{sys.executable}"'), cwd=work, shell=True, capture_output=True, timeout=300)
             row["ok"] = c.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
             row["ok"] = False

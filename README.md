@@ -7,11 +7,11 @@ Most token-saving plugins are a prompt telling the model to write less. But in r
 ## Install (Claude Code)
 
 ```
-/plugin marketplace add abdullah-qadoos/parsimon
+/plugin marketplace add abdullah-qadoos/parsimon-token-governor
 /plugin install parsimon@parsimon
 ```
 
-Start a new session. Needs `python3` 3.10+ on your PATH, and nothing else: no dependencies, no API keys, no network. If `ruff` or a project-local `eslint` is installed, the code checks use them too.
+Start a new session. Needs Python 3.10+ on your PATH (`python3`, or `python` on Windows), and nothing else: no dependencies, no API keys, no network. If `ruff` or a project-local `eslint` is installed, the code checks use them too.
 
 ## What it does
 
@@ -21,9 +21,9 @@ Start a new session. Needs `python3` 3.10+ on your PATH, and nothing else: no de
 | **Boot audit** | Session start, `/parsimon-audit` | Warns when CLAUDE.md files are heavy and lists MCP servers re-sent every turn |
 | **Smart reads** | Before `Read` | A text file over 400 lines with no line range gets an outline (functions and classes with line numbers) instead, so the agent reads only what it needs. Asking again reads the whole file |
 | **Reuse check** | Before `Write`/`Edit` | If the edit adds a function that looks like an existing one (`format_price_v2` next to `format_price`), the agent is told where the existing one is. Retrying the same edit goes through |
-| **Edit checks** | After `Write`/`Edit` | Syntax errors, duplicate function bodies, `foo`/`foo_new` variants, plus ruff or eslint findings, sent back in at most 8 lines |
+| **Edit checks** | After `Write`/`Edit` | Syntax errors, duplicate function bodies, `foo`/`foo_new` variants, plus ruff or eslint findings, sent back in at most 8 lines. Unused imports and undefined names wait for the quality gate, since mid-edit they are usually just half-finished |
 | **Quality gate** | Before the agent finishes | Re-checks every edited file and runs your `test_command`. The agent can't say "done" while they fail. Never loops |
-| **Cache guard** | Your next prompt | After more than 5 minutes idle with a big context, tells you the cache has expired and suggests `/compact` or a fresh session. Also warns when CLAUDE.md or MCP config is edited mid-session |
+| **Cache guard** | Your next prompt | After an idle gap longer than the cache lifetime (5 minutes, or 1 hour when the session uses the 1-hour cache) with a big context, tells you the cache has expired and suggests `/compact` or a fresh session. Also warns when CLAUDE.md or MCP config is edited mid-session |
 | **Handoff** | Before the agent finishes | Once context passes 120k tokens, asks the agent (once) to write `.parsimon/handoff.md`. `/parsimon-resume` continues from it in a fresh, cheap session |
 | **Report** | `/parsimon-report` | Splits your real sessions' cost into cache writes, cache reads, input and output, and flags cache rebuilds and oversized sessions |
 | **Benchmark** | `parsimon bench` | Paired A/B runs, Parsimon off vs on, with the median cost change, a 95% confidence interval and the task success rate |
@@ -89,7 +89,7 @@ hooks/            hooks.json, run.py (hook entry), cli.py (CLI without install)
 skills/           parsimon, -report, -audit, -review, -resume
 src/parsimon/     ledger, report, audit, governor, quality, bench, hooks, state, config, cli
 bench/            sample tasks + a tiny repo
-tests/            28 tests
+tests/            31 tests
 DESIGN.md         design notes
 ```
 

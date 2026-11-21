@@ -1,7 +1,7 @@
 """Turn ledger data into a plain-text report with the biggest wastes flagged."""
 from __future__ import annotations
 
-from .ledger import CATEGORIES, DEFAULT_WEIGHTS, Session, totals
+from .ledger import CATEGORIES, DEFAULT_WEIGHTS, WRITE_1H_FACTOR, Session, cost_of, totals
 
 LABELS = {
     "input": "Fresh input",
@@ -30,15 +30,20 @@ def build(sessions: list[Session], weights: dict[str, float] | None = None, pric
     weights = weights or DEFAULT_WEIGHTS
     unit_cost = {c: prices[c] / 1e6 for c in CATEGORIES} if prices else weights
     tok = totals(sessions)
+    write_1h = sum(s.write_1h for s in sessions)
     cost = {c: tok[c] * unit_cost[c] for c in CATEGORIES}
+    cost["cache_write"] += write_1h * unit_cost["cache_write"] * (WRITE_1H_FACTOR - 1)
     total_cost = sum(cost.values()) or 1.0
 
     rebuild_tokens = 0
     rebuild_count = 0
+    rebuild_cost = 0.0
     for s in sessions:
         for turn, _gap in s.cache_rebuilds():
             rebuild_count += 1
             rebuild_tokens += turn.cache_write
+            rebuild_cost += cost_of({c: getattr(turn, c) if c == "cache_write" else 0 for c in CATEGORIES},
+                                    turn.cache_write_1h, unit_cost)
     long_sessions = [s for s in sessions if s.peak_context >= LONG_SESSION_CONTEXT]
     long_cost = sum(_session_cost(s, unit_cost) for s in long_sessions)
 
@@ -51,11 +56,12 @@ def build(sessions: list[Session], weights: dict[str, float] | None = None, pric
         "total_cost": sum(cost.values()),
         "share": {c: cost[c] / total_cost for c in CATEGORIES},
         "dollars": bool(prices),
+        "write_1h_share": write_1h / tok["cache_write"] if tok["cache_write"] else 0.0,
         "rebuilds": {
             "count": rebuild_count,
             "tokens": rebuild_tokens,
-            "cost": rebuild_tokens * unit_cost["cache_write"],
-            "share": rebuild_tokens * unit_cost["cache_write"] / total_cost,
+            "cost": rebuild_cost,
+            "share": rebuild_cost / total_cost,
         },
         "long_sessions": {
             "count": len(long_sessions),
@@ -76,8 +82,7 @@ def build(sessions: list[Session], weights: dict[str, float] | None = None, pric
 
 
 def _session_cost(s: Session, unit_cost: dict[str, float]) -> float:
-    sums = s.sums()
-    return sum(sums[c] * unit_cost[c] for c in CATEGORIES)
+    return cost_of(s.sums(), s.write_1h, unit_cost)
 
 
 def render(data: dict, top: int = 5) -> str:
@@ -87,7 +92,8 @@ def render(data: dict, top: int = 5) -> str:
     unit = "dollars" if data["dollars"] else "input-equivalent tokens"
     lines = [
         f"Parsimon report: {data['sessions']} sessions, {data['turns']} model turns",
-        f"Cost shown in {unit}" + ("" if data["dollars"] else " (cache write 1.25x, cache read 0.1x, output 5x)"),
+        f"Cost shown in {unit}" + ("" if data["dollars"] else " (cache write 1.25x, 2x for 1-hour cache; cache read 0.1x; output 5x)"),
+        f"{data['write_1h_share'] * 100:.0f}% of cache writes used the 1-hour cache",
         "",
         f"{'Category':<14}{'Tokens':>10}{'Cost':>12}{'Share':>8}",
     ]
@@ -100,7 +106,7 @@ def render(data: dict, top: int = 5) -> str:
     r = data["rebuilds"]
     if r["count"]:
         lines.append(
-            f"- {r['count']} cache rebuilds after idle gaps over 5 min re-wrote {_fmt(r['tokens'])} tokens "
+            f"- {r['count']} cache rebuilds after idle gaps longer than the cache lifetime re-wrote {_fmt(r['tokens'])} tokens "
             f"({r['share'] * 100:.1f}% of cost). Compact or start fresh after long breaks."
         )
     ls = data["long_sessions"]

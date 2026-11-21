@@ -12,7 +12,7 @@ Parsimon's session-start hook already loads the short rules below each session. 
 When the user writes `/parsimon <mode>` with mode `lite`, `full`, `ultra` or `off`, save it with:
 
 ```bash
-python3 "$(cat ~/.config/parsimon/root)/hooks/cli.py" mode <mode>
+$(python3 -c "" 2>/dev/null && echo python3 || echo python) "$(cat ~/.config/parsimon/root)/hooks/cli.py" mode <mode>
 ```
 
 then confirm the new mode in one line. `/parsimon` with no mode shows the current mode (`... mode` with no argument).

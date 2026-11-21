@@ -12,6 +12,7 @@ text it adds is short, because anything a hook says is itself re-sent on later t
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from . import audit, config, governor, quality, state
@@ -33,6 +34,9 @@ RULES["ultra"] = RULES["full"] + " Ultra: challenge speculative requirements and
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit"}
+# Unused import / undefined name / unused variable: usually just a half-finished multi-step edit
+# (import added before its use). Reported by the stop gate instead of after every edit.
+MID_EDIT = re.compile(r":\d+:\d+: F(401|821|841) ")
 TEXT_EXT = {".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv", ".log", ".html", ".css", ".scss", ".sql", ".xml", ".sh", ".cfg", ".ini", ".env"}
 
 
@@ -183,7 +187,7 @@ def post_tool_use(payload: dict, mode: str) -> dict | None:
     state.save(sid, st)
     settings = config.project_settings(root)
     if settings["edit_checks"] and _inside(path, root):
-        findings = quality.check_file(path, root)
+        findings = [f for f in quality.check_file(path, root) if not MID_EDIT.search(f)]
         if findings:
             messages.append(quality.summarize(findings, f"Parsimon checks on {path.name}: fix these now."))
     if not messages:

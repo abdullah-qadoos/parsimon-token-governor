@@ -28,11 +28,15 @@ from typing import Iterable, Iterator
 # costs 1.25x input, a cache read 0.1x, and output about 5x.
 DEFAULT_WEIGHTS = {"input": 1.0, "cache_write": 1.25, "cache_read": 0.1, "output": 5.0}
 
+# A 1-hour cache write costs 2x input instead of 1.25x, so 1.6x the 5-minute write price.
+WRITE_1H_FACTOR = 2.0 / 1.25
+
 CATEGORIES = ("input", "cache_write", "cache_read", "output")
 
-# Prompt cache lifetime on the default tier. A gap longer than this before a turn
-# usually means the whole prefix was written to the cache again.
+# Prompt cache lifetimes. A gap longer than the session's TTL before a turn usually means
+# the whole prefix was written to the cache again. Sessions that write 1-hour cache use the long one.
 CACHE_TTL_SECONDS = 5 * 60
+CACHE_TTL_1H_SECONDS = 60 * 60
 
 # A turn counts as a cache rebuild if it writes at least this many tokens after an idle gap.
 REBUILD_MIN_TOKENS = 20_000
@@ -46,6 +50,7 @@ class Turn:
     cache_write: int = 0
     cache_read: int = 0
     output: int = 0
+    cache_write_1h: int = 0  # the part of cache_write that went to the 1-hour cache
 
     @property
     def context(self) -> int:
@@ -70,9 +75,16 @@ class Session:
                 s[c] += getattr(t, c)
         return s
 
+    @property
+    def write_1h(self) -> int:
+        return sum(t.cache_write_1h for t in self.turns)
+
+    @property
+    def ttl(self) -> int:
+        return ttl_for(self.write_1h)
+
     def cost(self, weights: dict[str, float] = DEFAULT_WEIGHTS) -> float:
-        sums = self.sums()
-        return sum(sums[c] * weights[c] for c in CATEGORIES)
+        return cost_of(self.sums(), self.write_1h, weights)
 
     @property
     def peak_context(self) -> int:
@@ -93,10 +105,19 @@ class Session:
         for t in self.turns:
             if prev and prev.timestamp and t.timestamp:
                 gap = (t.timestamp - prev.timestamp).total_seconds()
-                if gap > CACHE_TTL_SECONDS and t.cache_write >= REBUILD_MIN_TOKENS:
+                if gap > self.ttl and t.cache_write >= REBUILD_MIN_TOKENS:
                     found.append((t, gap))
             prev = t
         return found
+
+
+def ttl_for(write_1h_tokens: int) -> int:
+    return CACHE_TTL_1H_SECONDS if write_1h_tokens else CACHE_TTL_SECONDS
+
+
+def cost_of(sums: dict[str, int], write_1h: int, unit: dict[str, float]) -> float:
+    """Cost of token sums; `unit` prices cache_write at the 5-minute rate, 1-hour writes cost more."""
+    return sum(sums[c] * unit[c] for c in CATEGORIES) + write_1h * unit["cache_write"] * (WRITE_1H_FACTOR - 1)
 
 
 def _parse_time(value) -> datetime | None:
@@ -115,11 +136,13 @@ def _usage_numbers(usage: dict) -> dict[str, int]:
         return int(v) if isinstance(v, (int, float)) else 0
 
     cache_write = num("cache_creation_input_tokens")
+    nested = usage.get("cache_creation")
+    nested = nested if isinstance(nested, dict) else {}
     if not cache_write:
-        nested = usage.get("cache_creation")
-        if isinstance(nested, dict):
-            cache_write = sum(int(v) for v in nested.values() if isinstance(v, (int, float)))
+        cache_write = sum(int(v) for v in nested.values() if isinstance(v, (int, float)))
+    w1h = nested.get("ephemeral_1h_input_tokens")
     return {
+        "cache_write_1h": min(int(w1h), cache_write) if isinstance(w1h, (int, float)) else 0,
         "input": num("input_tokens"),
         "cache_write": cache_write,
         "cache_read": num("cache_read_input_tokens"),

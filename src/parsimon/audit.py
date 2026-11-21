@@ -122,5 +122,6 @@ def render(data: dict) -> str:
         if len(servers) > MCP_WARN_SERVERS:
             lines.append("Disable the ones this project doesn't use.")
     else:
-        lines.append("No MCP servers configured.")
+        lines.append("No MCP servers in local config files.")
+    lines.append("Not counted: claude.ai connectors and plugin MCP servers. Run /mcp to see everything connected.")
     return "\n".join(lines)

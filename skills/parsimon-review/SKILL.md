@@ -9,7 +9,7 @@ description: Review the current changes for code that shouldn't exist (duplicate
 2. Run the checks on each changed code file:
 
 ```bash
-python3 "$(cat ~/.config/parsimon/root)/hooks/cli.py" check <file> [<file> ...]
+$(python3 -c "" 2>/dev/null && echo python3 || echo python) "$(cat ~/.config/parsimon/root)/hooks/cli.py" check <file> [<file> ...]
 ```
 
 3. For every new function in the diff, search the repo (`rg -n "def <name>|function <name>|<name> ="`) for something that already does the job.

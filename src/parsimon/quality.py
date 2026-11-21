@@ -122,7 +122,7 @@ def index_definitions(root: Path, exclude: Path | None = None) -> dict[str, list
                 m = pat.match(line)
                 if m:
                     name = m.group(1)
-                    idx.setdefault(norm_name(name), []).append((str(p.relative_to(root)), i, name))
+                    idx.setdefault(norm_name(name), []).append((p.relative_to(root).as_posix(), i, name))
                     break
     return idx
 

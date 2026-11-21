@@ -8,7 +8,7 @@ description: Show where the user's Claude Code tokens and cost went (cache write
 Run:
 
 ```bash
-python3 "$(cat ~/.config/parsimon/root)/hooks/cli.py" report --days 14
+$(python3 -c "" 2>/dev/null && echo python3 || echo python) "$(cat ~/.config/parsimon/root)/hooks/cli.py" report --days 14
 ```
 
 Options: `--days N` (default 14), `--project <substring>` to filter by project folder, `--top N` sessions to list.

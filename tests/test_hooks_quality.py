@@ -1,5 +1,7 @@
 import json
+import os
 import stat
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -24,13 +26,14 @@ def repo(tmp_path):
     return root
 
 
-def _transcript(path: Path, context: int, ts: datetime, edits=()):
+def _transcript(path: Path, context: int, ts: datetime, edits=(), write_1h=0):
     content = [{"type": "tool_use", "name": "Edit", "input": {"file_path": f}} for f in edits]
     entry = {
         "type": "assistant",
         "timestamp": ts.isoformat().replace("+00:00", "Z"),
         "message": {"id": "m1", "usage": {"input_tokens": 10, "cache_creation_input_tokens": 0,
-                                           "cache_read_input_tokens": context, "output_tokens": 50},
+                                           "cache_read_input_tokens": context, "output_tokens": 50,
+                                           "cache_creation": {"ephemeral_1h_input_tokens": write_1h}},
                     "content": content},
     }
     path.write_text(json.dumps(entry) + "\n")
@@ -187,6 +190,10 @@ def test_bench_run_with_fake_claude(tmp_path):
         "'usage': {'input_tokens': 10, 'cache_creation_input_tokens': 100, 'cache_read_input_tokens': 1000, 'output_tokens': 50}}))\n"
     )
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    if os.name == "nt":  # Windows can't exec a shebang script: wrap it
+        wrapper = tmp_path / "claude.cmd"
+        wrapper.write_text(f'@"{sys.executable}" "{fake}" %*\n')
+        fake = wrapper
     tasks = Path(__file__).resolve().parents[1] / "bench" / "tasks.json"
     out = bench.run(tasks, reps=1, out_file=tmp_path / "r.jsonl", claude=str(fake), log=lambda *_: None)
     res = bench.compare(bench.load_rows(out))
@@ -199,3 +206,23 @@ def test_read_gate_ignores_binary_files(repo):
     pdf.write_bytes(b"%PDF-1.4\n" + b"line\n" * 2000)
     payload = {"session_id": "s14", "cwd": str(repo), "tool_name": "Read", "tool_input": {"file_path": str(pdf)}}
     assert hooks.dispatch("pre-tool-use", payload) is None
+
+
+# ---------- fixes: 1-hour cache, mid-edit lint ----------
+
+def test_one_hour_cache_does_not_warn_after_12_minutes_but_does_after_an_hour(repo, tmp_path):
+    now = datetime.now(timezone.utc)
+    short = _transcript(tmp_path / "a.jsonl", 80_000, now - timedelta(minutes=12), write_1h=2_000)
+    assert hooks.dispatch("user-prompt-submit", {"session_id": "h1", "cwd": str(repo), "transcript_path": str(short)}) is None
+    long = _transcript(tmp_path / "b.jsonl", 80_000, now - timedelta(minutes=61), write_1h=2_000)
+    out = hooks.dispatch("user-prompt-submit", {"session_id": "h1", "cwd": str(repo), "transcript_path": str(long)})
+    assert "cache has expired" in out["systemMessage"]
+
+
+def test_mid_edit_lint_is_deferred_to_the_stop_gate(repo, monkeypatch):
+    unused = "f.py:1:8: F401 [*] `os` imported but unused"
+    monkeypatch.setattr(quality, "check_file", lambda p, r: [unused])
+    payload = {"session_id": "h2", "cwd": str(repo), "tool_name": "Edit", "tool_input": {"file_path": str(repo / "utils" / "money.py")}}
+    assert hooks.dispatch("post-tool-use", payload) is None
+    out = hooks.dispatch("stop", {"session_id": "h2", "cwd": str(repo)})
+    assert out["decision"] == "block" and "F401" in out["reason"]
