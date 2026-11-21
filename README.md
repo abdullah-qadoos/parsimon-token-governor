@@ -1,10 +1,8 @@
 # parsimon
 
-**A cache-aware token governor for Claude Code.** It shows where your tokens actually go, trims what gets re-sent every turn, and keeps the agent's code lean.
+**A cache-aware token governor for Claude Code.** It shows where your tokens actually go, cuts what gets re-sent every turn, and stops the agent writing code that shouldn't exist.
 
-Most token-saving plugins only tell the model to write less. But in real Claude Code sessions, output is a small slice of the bill. Most of the cost is the context re-sent and re-cached on every turn. Parsimon measures that first, then cuts it.
-
-> Status: **v0.1, week 1**. Token ledger, report, boot audit and lean rules are working. Next up: smart reads, the cache guard and session handoff, code-quality hooks, and a paired benchmark.
+Most token-saving plugins are a prompt telling the model to write less. But in real sessions, output is a small slice of the bill: most of it is context that gets re-sent and re-cached on every turn. Parsimon measures that, cuts it with hooks that actually run, and checks the agent's code instead of just asking nicely.
 
 ## Install (Claude Code)
 
@@ -13,52 +11,86 @@ Most token-saving plugins only tell the model to write less. But in real Claude 
 /plugin install parsimon@parsimon
 ```
 
-Start a new session. Lean mode switches on automatically. Requires `python3` (3.10+) on your PATH, and nothing else: no dependencies, no API keys, no network.
+Start a new session. Needs `python3` 3.10+ on your PATH, and nothing else: no dependencies, no API keys, no network. If `ruff` or a project-local `eslint` is installed, the code checks use them too.
+
+## What it does
+
+| Layer | When | What happens |
+|---|---|---|
+| **Lean rules** | Session start | Adds under 150 tokens of rules: reuse before writing, read line ranges, keep output short |
+| **Boot audit** | Session start, `/parsimon-audit` | Warns when CLAUDE.md files are heavy and lists MCP servers re-sent every turn |
+| **Smart reads** | Before `Read` | A text file over 400 lines with no line range gets an outline (functions and classes with line numbers) instead, so the agent reads only what it needs. Asking again reads the whole file |
+| **Reuse check** | Before `Write`/`Edit` | If the edit adds a function that looks like an existing one (`format_price_v2` next to `format_price`), the agent is told where the existing one is. Retrying the same edit goes through |
+| **Edit checks** | After `Write`/`Edit` | Syntax errors, duplicate function bodies, `foo`/`foo_new` variants, plus ruff or eslint findings, sent back in at most 8 lines |
+| **Quality gate** | Before the agent finishes | Re-checks every edited file and runs your `test_command`. The agent can't say "done" while they fail. Never loops |
+| **Cache guard** | Your next prompt | After more than 5 minutes idle with a big context, tells you the cache has expired and suggests `/compact` or a fresh session. Also warns when CLAUDE.md or MCP config is edited mid-session |
+| **Handoff** | Before the agent finishes | Once context passes 120k tokens, asks the agent (once) to write `.parsimon/handoff.md`. `/parsimon-resume` continues from it in a fresh, cheap session |
+| **Report** | `/parsimon-report` | Splits your real sessions' cost into cache writes, cache reads, input and output, and flags cache rebuilds and oversized sessions |
+| **Benchmark** | `parsimon bench` | Paired A/B runs, Parsimon off vs on, with the median cost change, a 95% confidence interval and the task success rate |
 
 ## Commands
 
-| Command | What it does |
+| Command | |
 |---|---|
-| `/parsimon-report` | Splits your recent sessions' cost into cache writes, cache reads, fresh input and output, and flags waste |
-| `/parsimon-audit` | Measures the CLAUDE.md files and MCP servers re-sent every turn |
-| `/parsimon [lite\|full\|ultra\|off]` | Shows or changes the lean-coding mode |
+| `/parsimon [lite\|full\|ultra\|off]` | Show or change the mode. `lite` keeps reads, checks and the report but skips the reuse block and quality gate. `off` disables every hook |
+| `/parsimon-report` | Where your tokens went |
+| `/parsimon-audit` | What's in the boot payload |
+| `/parsimon-review` | A delete / reuse / simplify list for the current diff, backed by the checks |
+| `/parsimon-resume` | Continue from `.parsimon/handoff.md` |
 
-From a terminal: `python3 hooks/cli.py report --days 14`. Add `--prices 3,3.75,0.3,15` (dollars per million tokens: input, cache write, cache read, output) to see dollars.
+## Per-project settings
 
-## Example report
+Optional `.parsimon.json` in the project root:
+
+```json
+{
+  "test_command": "pytest -q -x",
+  "test_timeout": 120,
+  "read_gate_lines": 400,
+  "handoff_at_tokens": 120000,
+  "idle_warn_tokens": 40000,
+  "reuse_check": true,
+  "edit_checks": true
+}
+```
+
+`PARSIMON_MODE=off` in the environment overrides everything, which is how the benchmark runs its baseline arm.
+
+## Benchmark
 
 ```
-Parsimon report: 3 sessions, 195 model turns
-Category          Tokens        Cost   Share
-Cache reads        34.7M        3.5M   52.9%
-Cache writes        1.8M        2.2M   34.2%
-Output            168.6k      843.0k   12.8%
-Fresh input         4.3k        4.3k    0.1%
-
-Flags
-- 5 cache rebuilds after idle gaps over 5 min re-wrote 1.1M tokens (21.8% of cost).
-- 3 sessions grew past 100.0k tokens of context and account for 100.0% of cost.
-- Output is only 12.8% of cost, so prompts that just make the model write less can't save much here.
+python3 hooks/cli.py bench run bench/tasks.json --reps 5
+python3 hooks/cli.py bench compare bench/results.jsonl
 ```
 
-(Sample data. Run it on your own sessions to see yours.)
+Each task runs in a fresh copy of its repo with `claude -p`, alternating Parsimon off and on in random order. The task's `check` command decides success, so savings from failing tasks don't count. Example output:
 
-## How it works
+```
+Parsimon benchmark: 15 paired runs
+Median cost change with Parsimon: -X.X% (95% CI ... to ...)
+baseline  task success 15/15 (100%)
+parsimon  task success 15/15 (100%)
+```
 
-- **Ledger:** reads the session transcripts Claude Code already writes to `~/.claude/projects`, de-duplicates streamed messages, and totals each turn's `usage` by category. Costs use relative weights (cache write 1.25×, cache read 0.1×, output 5× input) unless you pass real prices.
-- **Cache rebuilds:** flags turns that re-wrote a large prefix after an idle gap longer than the 5-minute cache lifetime.
-- **Boot audit:** estimates the tokens in every CLAUDE.md that gets loaded, and lists configured MCP servers.
-- **SessionStart hook:** adds a short set of lean rules (under 150 tokens) and a one-line warning if your instruction files are large. Errors never break your session.
+No numbers are published yet. Run it on your own tasks, and only trust the confidence interval.
+
+## How it stays cheap and safe
+
+- Every block or warning fires at most once per item per session, and is kept short, because hook output is re-sent on later turns too.
+- Hooks never crash a session. Any internal error means no output.
+- The stop gate respects `stop_hook_active`, so it can't loop.
+- State lives in `~/.config/parsimon/` and is cleaned up after 7 days.
 
 ## Layout
 
 ```
 .claude-plugin/   plugin + marketplace manifests
 hooks/            hooks.json, run.py (hook entry), cli.py (CLI without install)
-skills/           parsimon, parsimon-report, parsimon-audit
-src/parsimon/     ledger, report, audit, hooks, config, cli
-tests/            pytest suite with synthetic transcripts
-DESIGN.md         full design and roadmap
+skills/           parsimon, -report, -audit, -review, -resume
+src/parsimon/     ledger, report, audit, governor, quality, bench, hooks, state, config, cli
+bench/            sample tasks + a tiny repo
+tests/            28 tests
+DESIGN.md         design notes
 ```
 
 ## Development
@@ -70,7 +102,7 @@ pytest
 
 ## Credits
 
-The lean-coding rules draw on the "reuse before you write" idea popularised by [Ponytail](https://github.com/DietrichGebert/ponytail) (MIT). Parsimon's focus is different: measuring and cutting the context cost that rules alone can't reach.
+The reuse-before-you-write rules draw on the idea popularised by [Ponytail](https://github.com/DietrichGebert/ponytail) (MIT). Parsimon goes after the context cost and code checks that rules alone can't reach.
 
 ## License
 

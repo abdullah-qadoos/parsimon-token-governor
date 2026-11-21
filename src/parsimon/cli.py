@@ -6,14 +6,14 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, audit, config, ledger, report
+from . import __version__, audit, bench, config, ledger, quality, report
 
 
 def _prices(value: str) -> dict[str, float]:
     parts = [float(x) for x in value.split(",")]
     if len(parts) != 4:
         raise argparse.ArgumentTypeError("--prices needs 4 numbers: input,cache_write,cache_read,output ($ per million)")
-    return dict(zip(ledger.CATEGORIES, parts))
+    return dict(zip(ledger.CATEGORIES, parts, strict=True))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,6 +35,22 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("mode", help="show or set the lean mode")
     m.add_argument("mode", nargs="?", choices=config.MODES)
 
+    c = sub.add_parser("check", help="run Parsimon's code checks on files")
+    c.add_argument("files", nargs="+", type=Path)
+    c.add_argument("--root", type=Path, default=Path.cwd())
+
+    b = sub.add_parser("bench", help="paired A/B benchmark with Parsimon off vs on")
+    bsub = b.add_subparsers(dest="bench_cmd", required=True)
+    br = bsub.add_parser("run", help="run tasks headless with claude -p")
+    br.add_argument("tasks", type=Path, help="tasks.json")
+    br.add_argument("--reps", type=int, default=3)
+    br.add_argument("--out", type=Path, default=Path("bench/results.jsonl"))
+    br.add_argument("--claude", default="claude", help="path to the claude CLI")
+    br.add_argument("--timeout", type=int, default=900)
+    br.add_argument("--claude-args", default="--permission-mode acceptEdits", help="extra args for claude -p")
+    bc = bsub.add_parser("compare", help="summarise a results file")
+    bc.add_argument("results", type=Path)
+
     args = p.parse_args(argv)
 
     if args.cmd == "report":
@@ -51,6 +67,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"parsimon mode: {config.set_mode(args.mode)}")
         else:
             print(f"parsimon mode: {config.get_mode()}")
+    elif args.cmd == "check":
+        findings = []
+        for f in args.files:
+            findings += quality.check_file(f.resolve(), args.root.resolve())
+        print(quality.summarize(findings, f"{len(findings)} findings") if findings else "No findings.")
+        return 1 if findings else 0
+    elif args.cmd == "bench":
+        if args.bench_cmd == "run":
+            bench.run(args.tasks, args.reps, args.out, args.claude, args.claude_args.split(), args.timeout)
+            print(bench.render(bench.compare(bench.load_rows(args.out))))
+        else:
+            print(bench.render(bench.compare(bench.load_rows(args.results))))
     return 0
 
 

@@ -1,6 +1,6 @@
 {
   "name": "parsimon",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cache-aware token governor for coding agents: measures where your tokens go, slims the boot payload, and keeps the agent's code lean.",
   "author": {
     "name": "Muhammad Abdullah Noor",

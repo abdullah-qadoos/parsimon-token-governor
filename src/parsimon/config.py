@@ -45,6 +45,33 @@ def set_mode(mode: str) -> str:
     return mode
 
 
+PROJECT_DEFAULTS = {
+    "read_gate_lines": 400,  # Read of a bigger file with no line range gets an outline first
+    "handoff_at_tokens": 120_000,  # context size that triggers a handoff
+    "idle_warn_tokens": 40_000,  # only warn about an expired cache if the prefix is this big
+    "reuse_check": True,
+    "edit_checks": True,
+    "test_command": None,  # e.g. "pytest -q -x"; run by the stop gate when set
+    "test_timeout": 120,
+}
+
+
+def project_settings(cwd: str | Path | None) -> dict:
+    """Defaults, overridden by the global config, overridden by <project>/.parsimon.json."""
+    out = dict(PROJECT_DEFAULTS)
+    glob = load().get("project_defaults")
+    if isinstance(glob, dict):
+        out.update({k: v for k, v in glob.items() if k in PROJECT_DEFAULTS})
+    if cwd:
+        try:
+            local = json.loads((Path(cwd) / ".parsimon.json").read_text(encoding="utf-8"))
+            if isinstance(local, dict):
+                out.update({k: v for k, v in local.items() if k in PROJECT_DEFAULTS})
+        except (OSError, ValueError):
+            pass
+    return out
+
+
 def register_root(root: Path) -> None:
     """Remember where the plugin lives so skills can call its CLI."""
     config_dir().mkdir(parents=True, exist_ok=True)
