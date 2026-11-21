@@ -1,11 +1,13 @@
 """Hook handlers. Each returns the JSON object Claude Code expects, or None for no output.
 
-Events and what they do:
-  session-start       lean rules + boot-size warning                    (L1, L5)
-  user-prompt-submit  warn when an idle gap has expired a large cache     (L2)
-  pre-tool-use        outline-first for big Reads; reuse check on edits  (L4, quality)
-  post-tool-use       fast checks on edited files; prefix-change warning (quality, L2)
-  stop                quality gate, then handoff when context is large  (quality, L3)
+Two independent parts, switched with /parsimon both|save|code|off:
+
+  save (token saver)                         code (code-quality flags)
+  session-start: short context rules         post-tool-use: lean coding rules on the first edit
+  pre-tool-use: outline-first big Reads      pre-tool-use: reuse check on new functions
+  user-prompt-submit: expired-cache warning  post-tool-use: syntax, duplicate and lint checks
+  post-tool-use: cached-prefix edit warning  stop: quality gate (checks + test_command)
+  session-start + stop: per-project memory
 
 Rule of thumb: every block or warning fires at most once per thing per session, and the
 text it adds is short, because anything a hook says is itself re-sent on later turns.
@@ -15,22 +17,19 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import audit, config, governor, quality, state
+from . import audit, config, governor, memory, quality, state
 
-RULES = {
-    "lite": (
-        "Parsimon lite: build what was asked; if a smaller solution exists, mention it in one line."
-    ),
-    "full": (
-        "Parsimon (lean mode). Before new code: does it need to exist, does the codebase, stdlib, "
-        "platform or an installed dependency already do it? Reuse first; edit existing functions, no "
-        "near-duplicates or single-use abstractions, no dead code. Keep validation, error handling and "
-        "security. Context: search before reading, read line ranges not whole large files, keep command "
-        "output short (tail/grep, run the failing test only), don't re-read unchanged files. Replies: what "
-        "changed, where, how verified."
-    ),
-}
-RULES["ultra"] = RULES["full"] + " Ultra: challenge speculative requirements and prefer deleting code to adding it."
+# Sent at session start when "save" is on.
+SAVE_RULES = (
+    "Parsimon: search before reading; read line ranges, not whole large files; keep command output "
+    "short (tail/grep, run only the failing test); don't re-read unchanged files; keep replies short."
+)
+# Sent once, after the first edit, when "code" is on: sessions that never edit code don't pay for it.
+CODE_RULES = (
+    "Parsimon code rules: before new code, check whether it needs to exist and whether the codebase, stdlib "
+    "or an installed dependency already does it. Edit existing functions instead of adding near-duplicates; "
+    "no single-use abstractions or dead code. Keep validation, error handling and security."
+)
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit"}
@@ -70,27 +69,37 @@ def _target(payload: dict) -> tuple[Path | None, Path]:
 
 # ---------- session start ----------
 
-def session_start(payload: dict, mode: str) -> dict | None:
+def session_start(payload: dict, on: set[str]) -> dict | None:
     try:
         config.register_root(PLUGIN_ROOT)
         state.prune()
     except OSError:
         pass
-    parts = [RULES[mode]]
+    if "save" not in on:
+        return None
+    parts = [SAVE_RULES]
     cwd = payload.get("cwd")
     if cwd:
+        settings = config.project_settings(cwd)
+        # "resume" already has the conversation; "compact" already has a summary.
+        if settings["memory"] and payload.get("source", "startup") in ("startup", "clear"):
+            mem = memory.startup_context(cwd, settings["memory_max_age_days"])
+            if mem:
+                parts.append(mem)
         data = audit.run(Path(cwd))
         if data["instruction_tokens"] > audit.CLAUDE_MD_WARN_TOKENS:
             parts.append(
                 f"Note for the user (mention once, briefly): instruction files load about "
-                f"{data['instruction_tokens']:,} tokens every turn. /parsimon-audit shows what to trim."
+                f"{data['instruction_tokens']:,} tokens every turn. /parsimon audit shows what to trim."
             )
     return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n".join(parts)}}
 
 
 # ---------- L2: expired cache ----------
 
-def user_prompt_submit(payload: dict, mode: str) -> dict | None:
+def user_prompt_submit(payload: dict, on: set[str]) -> dict | None:
+    if "save" not in on:
+        return None
     settings = config.project_settings(payload.get("cwd"))
     snap = governor.snapshot(payload.get("transcript_path"))
     if not governor.cache_expired(snap, settings["idle_warn_tokens"]):
@@ -103,17 +112,21 @@ def user_prompt_submit(payload: dict, mode: str) -> dict | None:
     st["idle_warned_for"] = stamp
     state.save(sid, st)
     minutes = int(governor.idle_seconds(snap["last_turn"]) // 60)
+    cwd = payload.get("cwd") or "."
+    has_memory = memory.project_file(cwd).is_file() or any(memory.task_dir(cwd).glob("*.md"))
+    tip = ("Type /clear to continue from this project's Parsimon memory instead." if has_memory
+           else "For a cheaper restart, run /compact.")
     return {
         "systemMessage": (
             f"Parsimon: {minutes} min idle, so the prompt cache has expired. This turn re-writes about "
-            f"{snap['context']:,} tokens of context. For a cheaper restart, run /compact or start fresh with /parsimon-resume."
+            f"{snap['context']:,} tokens of context. {tip}"
         )
     }
 
 
 # ---------- L4 + quality: before a tool runs ----------
 
-def pre_tool_use(payload: dict, mode: str) -> dict | None:
+def pre_tool_use(payload: dict, on: set[str]) -> dict | None:
     tool = payload.get("tool_name")
     inp = payload.get("tool_input") or {}
     path, root = _target(payload)
@@ -122,13 +135,14 @@ def pre_tool_use(payload: dict, mode: str) -> dict | None:
     settings = config.project_settings(root)
     sid = payload.get("session_id", "")
 
-    if tool == "Read":
+    if tool == "Read" and "save" in on:
         if inp.get("offset") or inp.get("limit") or not path.is_file():
             return None
         if path.suffix.lower() not in quality.CODE_EXT | TEXT_EXT:
             return None  # images, PDFs, notebooks are read differently: leave them alone
         lines = quality.count_lines(path)
-        if lines <= settings["read_gate_lines"]:
+        size = path.stat().st_size
+        if lines <= settings["read_gate_lines"] and size <= settings["read_gate_bytes"]:
             return None
         st = state.load(sid)
         gated = st.setdefault("read_gated", [])
@@ -140,11 +154,12 @@ def pre_tool_use(payload: dict, mode: str) -> dict | None:
         items = quality.outline(path)
         listing = "\n".join(items) if items else "(no definitions found)"
         return _deny(
-            f"Parsimon: {path.name} has {lines:,} lines. Read only the part you need with offset/limit. "
+            f"Parsimon: {path.name} has {lines:,} lines (about {size // 4:,} tokens). Read only the part you need "
+            "with offset/limit, or search it with Grep. "
             f"Outline:\n{listing}\nIf you really need the whole file, request the same Read again."
         )
 
-    if tool in EDIT_TOOLS and mode in ("full", "ultra") and settings["reuse_check"] and _inside(path, root):
+    if tool in EDIT_TOOLS and "code" in on and settings["reuse_check"] and _inside(path, root):
         names = quality.new_definitions(tool, inp, path)
         if not names:
             return None
@@ -165,7 +180,7 @@ def pre_tool_use(payload: dict, mode: str) -> dict | None:
 
 # ---------- quality + L2: after a tool runs ----------
 
-def post_tool_use(payload: dict, mode: str) -> dict | None:
+def post_tool_use(payload: dict, on: set[str]) -> dict | None:
     tool = payload.get("tool_name")
     if tool not in EDIT_TOOLS:
         return None
@@ -178,7 +193,11 @@ def post_tool_use(payload: dict, mode: str) -> dict | None:
     if str(path) not in edited:
         edited.append(str(path))
     messages = []
-    if governor.is_prefix_file(str(path)) and not st.get("prefix_warned"):
+    rules = ""
+    if "code" in on and not st.get("code_rules_sent"):
+        st["code_rules_sent"] = True
+        rules = CODE_RULES
+    if "save" in on and governor.is_prefix_file(str(path)) and not st.get("prefix_warned"):
         st["prefix_warned"] = True
         messages.append(
             f"Parsimon: {path.name} is part of the cached prefix. Changing it mid-session re-writes the cache on "
@@ -186,18 +205,20 @@ def post_tool_use(payload: dict, mode: str) -> dict | None:
         )
     state.save(sid, st)
     settings = config.project_settings(root)
-    if settings["edit_checks"] and _inside(path, root):
+    if "code" in on and settings["edit_checks"] and _inside(path, root):
         findings = [f for f in quality.check_file(path, root) if not MID_EDIT.search(f)]
         if findings:
             messages.append(quality.summarize(findings, f"Parsimon checks on {path.name}: fix these now."))
-    if not messages:
-        return None
-    return {"decision": "block", "reason": "\n".join(messages)}
+    if messages:
+        return {"decision": "block", "reason": "\n".join(messages + ([rules] if rules else []))}
+    if rules:
+        return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": rules}}
+    return None
 
 
-# ---------- quality gate, then L3 handoff ----------
+# ---------- quality gate, then memory ----------
 
-def stop(payload: dict, mode: str) -> dict | None:
+def stop(payload: dict, on: set[str]) -> dict | None:
     if payload.get("stop_hook_active"):
         return None  # already continuing because of a Stop hook: never loop
     sid = payload.get("session_id", "")
@@ -205,7 +226,7 @@ def stop(payload: dict, mode: str) -> dict | None:
     settings = config.project_settings(root)
     st = state.load(sid)
 
-    if mode in ("full", "ultra") and st.get("edited") and not st.get("gate_passed_for") == len(st["edited"]):
+    if "code" in on and st.get("edited") and not st.get("gate_passed_for") == len(st["edited"]):
         findings = []
         for f in st["edited"]:
             p = Path(f)
@@ -224,12 +245,23 @@ def stop(payload: dict, mode: str) -> dict | None:
         st["gate_passed_for"] = len(st["edited"])
         state.save(sid, st)
 
+    if "save" not in on:
+        return None
+    if not settings["memory"]:
+        return None
     snap = governor.snapshot(payload.get("transcript_path"))
-    if snap["context"] >= settings["handoff_at_tokens"] and not st.get("handoff_requested"):
-        st["handoff_requested"] = True
-        state.save(sid, st)
-        return {"decision": "block", "reason": governor.handoff_instruction(root, snap)}
-    return None
+    every = int(settings["memory_every_tokens"])
+    # Count growth from where this session started (a fresh session already carries ~30k of system
+    # prompt and tools), so a quick question never overwrites a good memory.
+    if snap["context"] < st.get("memory_next", snap["first_context"] + every):
+        return None
+    st["memory_next"] = snap["context"] + every
+    state.save(sid, st)
+    try:
+        memory.ensure_dir(root)
+    except OSError:
+        return None
+    return {"decision": "block", "reason": memory.write_instruction(root, snap["context"], snap["files"])}
 
 
 HANDLERS = {
@@ -245,12 +277,12 @@ def dispatch(event: str, payload: dict) -> dict | None:
     handler = HANDLERS.get(event)
     if not handler:
         return None
-    mode = config.get_mode()
-    if mode == "off":
+    on = config.parts(config.get_mode())
+    if not on:
         if event == "session-start":
             try:
                 config.register_root(PLUGIN_ROOT)
             except OSError:
                 pass
         return None
-    return handler(payload, mode)
+    return handler(payload, on)

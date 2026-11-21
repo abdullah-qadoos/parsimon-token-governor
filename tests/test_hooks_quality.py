@@ -79,8 +79,8 @@ def test_reuse_check_ignores_genuinely_new_names(repo):
     assert hooks.dispatch("pre-tool-use", payload) is None
 
 
-def test_lite_mode_skips_reuse_check(repo):
-    config.set_mode("lite")
+def test_save_only_skips_reuse_check(repo):
+    config.set_mode("save")
     payload = {
         "session_id": "s4", "cwd": str(repo), "tool_name": "Write",
         "tool_input": {"file_path": str(repo / "cart.py"), "content": "def format_price_new(c):\n    return c\n"},
@@ -100,10 +100,12 @@ def test_post_edit_catches_syntax_error_and_duplicate_body(repo):
     assert "syntax error" in out["reason"]
 
 
-def test_post_edit_clean_file_is_silent(repo):
-    out = hooks.dispatch("post-tool-use", {"session_id": "s6", "cwd": str(repo), "tool_name": "Edit",
-                                           "tool_input": {"file_path": str(repo / "utils" / "money.py")}})
-    assert out is None
+def test_code_rules_arrive_once_on_first_edit_then_clean_edits_are_silent(repo):
+    payload = {"session_id": "s6", "cwd": str(repo), "tool_name": "Edit",
+               "tool_input": {"file_path": str(repo / "utils" / "money.py")}}
+    out = hooks.dispatch("post-tool-use", payload)
+    assert "code rules" in out["hookSpecificOutput"]["additionalContext"]
+    assert hooks.dispatch("post-tool-use", payload) is None
 
 
 def test_prefix_file_edit_warns_once(repo):
@@ -132,11 +134,63 @@ def test_stop_gate_passes_with_green_tests(repo):
     assert hooks.dispatch("stop", {"session_id": "s9", "cwd": str(repo)}) is None
 
 
-def test_handoff_requested_once_when_context_is_large(repo, tmp_path):
-    tr = _transcript(tmp_path / "t.jsonl", 150_000, datetime.now(timezone.utc), edits=[str(repo / "big.py")])
-    out = hooks.dispatch("stop", {"session_id": "s10", "cwd": str(repo), "transcript_path": str(tr)})
-    assert out["decision"] == "block" and ".parsimon/handoff.md" in out["reason"] and "big.py" in out["reason"]
-    assert hooks.dispatch("stop", {"session_id": "s10", "cwd": str(repo), "transcript_path": str(tr)}) is None
+def _grown(path: Path, start: int, end: int, edits=()):
+    """A transcript whose context grew from `start` to `end` tokens this session."""
+    first = _transcript(path, start, datetime.now(timezone.utc)).read_text()
+    _transcript(path, end, datetime.now(timezone.utc), edits=edits)
+    path.write_text(first + path.read_text())
+    return path
+
+
+def test_memory_rewrite_requested_every_40k_tokens(repo, tmp_path):
+    payload = {"session_id": "s10", "cwd": str(repo)}
+    small = _grown(tmp_path / "a.jsonl", 30_000, 60_000)  # grew 30k: not yet
+    assert hooks.dispatch("stop", {**payload, "transcript_path": str(small)}) is None
+    big = _grown(tmp_path / "b.jsonl", 30_000, 75_000, edits=[str(repo / "big.py")])
+    out = hooks.dispatch("stop", {**payload, "transcript_path": str(big)})
+    assert out["decision"] == "block" and ".parsimon/memory.md" in out["reason"] and "big.py" in out["reason"]
+    assert (repo / ".parsimon" / ".gitignore").read_text() == "*\n"  # git skips it; user's .gitignore untouched
+    assert hooks.dispatch("stop", {**payload, "transcript_path": str(big)}) is None  # not again at the same size
+    bigger = _grown(tmp_path / "c.jsonl", 30_000, 120_000)
+    assert hooks.dispatch("stop", {**payload, "transcript_path": str(bigger)})["decision"] == "block"
+
+
+def test_project_memory_loads_on_startup_and_clear_not_resume(repo):
+    (repo / ".parsimon").mkdir()
+    (repo / ".parsimon" / "memory.md").write_text("# fix cart - 2026-11-22\nNext: add EUR test")
+    for source, expected in (("startup", True), ("clear", True), ("resume", False), ("compact", False)):
+        ctx = hooks.dispatch("session-start", {"cwd": str(repo), "source": source})["hookSpecificOutput"]["additionalContext"]
+        assert ("Next: add EUR test" in ctx) == expected, source
+
+
+def test_stale_memory_is_not_loaded(repo):
+    (repo / ".parsimon").mkdir()
+    mem = repo / ".parsimon" / "memory.md"
+    mem.write_text("old task")
+    old = datetime.now().timestamp() - 30 * 86400
+    os.utime(mem, (old, old))
+    ctx = hooks.dispatch("session-start", {"cwd": str(repo)})["hookSpecificOutput"]["additionalContext"]
+    assert "old task" not in ctx
+
+
+def test_home_folder_lists_task_memories_and_asks_for_one_file_per_task(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".parsimon" / "memory").mkdir(parents=True)
+    (home / ".parsimon" / "memory" / "qc-427.md").write_text("# QC handover 427 - 2026-11-21\nlong details")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    ctx = hooks.dispatch("session-start", {"cwd": str(home)})["hookSpecificOutput"]["additionalContext"]
+    assert "qc-427.md: QC handover 427" in ctx and "long details" not in ctx  # listed, not loaded
+    tr = _grown(tmp_path / "t.jsonl", 30_000, 80_000)
+    out = hooks.dispatch("stop", {"session_id": "s20", "cwd": str(home), "transcript_path": str(tr)})
+    assert "memory/<short-task-name>.md" in out["reason"]
+
+
+def test_idle_warning_points_to_clear_when_memory_exists(repo, tmp_path):
+    (repo / ".parsimon").mkdir()
+    (repo / ".parsimon" / "memory.md").write_text("x")
+    tr = _transcript(tmp_path / "t.jsonl", 80_000, datetime.now(timezone.utc) - timedelta(minutes=12))
+    out = hooks.dispatch("user-prompt-submit", {"session_id": "s21", "cwd": str(repo), "transcript_path": str(tr)})
+    assert "/clear" in out["systemMessage"]
 
 
 # ---------- cache guard ----------
@@ -185,7 +239,7 @@ def test_bench_run_with_fake_claude(tmp_path):
     fake = tmp_path / "claude"
     fake.write_text(
         "#!/usr/bin/env python3\nimport json, os\n"
-        "cost = 0.5 if os.environ.get('PARSIMON_MODE') == 'full' else 1.0\n"
+        "cost = 0.5 if os.environ.get('PARSIMON_MODE') == 'both' else 1.0\n"
         "print(json.dumps({'session_id': 'x', 'num_turns': 3, 'total_cost_usd': cost, "
         "'usage': {'input_tokens': 10, 'cache_creation_input_tokens': 100, 'cache_read_input_tokens': 1000, 'output_tokens': 50}}))\n"
     )
@@ -223,6 +277,45 @@ def test_mid_edit_lint_is_deferred_to_the_stop_gate(repo, monkeypatch):
     unused = "f.py:1:8: F401 [*] `os` imported but unused"
     monkeypatch.setattr(quality, "check_file", lambda p, r: [unused])
     payload = {"session_id": "h2", "cwd": str(repo), "tool_name": "Edit", "tool_input": {"file_path": str(repo / "utils" / "money.py")}}
-    assert hooks.dispatch("post-tool-use", payload) is None
+    assert "F401" not in json.dumps(hooks.dispatch("post-tool-use", payload))
     out = hooks.dispatch("stop", {"session_id": "h2", "cwd": str(repo)})
     assert out["decision"] == "block" and "F401" in out["reason"]
+
+
+# ---------- two parts: save and code ----------
+
+def test_code_only_skips_token_saver(repo, tmp_path):
+    config.set_mode("code")
+    read = {"session_id": "p1", "cwd": str(repo), "tool_name": "Read", "tool_input": {"file_path": str(repo / "big.py")}}
+    assert hooks.dispatch("pre-tool-use", read) is None
+    assert hooks.dispatch("session-start", {"cwd": str(repo)}) is None
+    tr = _transcript(tmp_path / "t.jsonl", 150_000, datetime.now(timezone.utc))
+    assert hooks.dispatch("stop", {"session_id": "p1", "cwd": str(repo), "transcript_path": str(tr)}) is None
+
+
+def test_save_only_sends_no_code_rules_or_checks(repo):
+    config.set_mode("save")
+    bad = repo / "bad.py"
+    bad.write_text("def a(:\n")
+    assert hooks.dispatch("post-tool-use", {"session_id": "p2", "cwd": str(repo), "tool_name": "Write",
+                                            "tool_input": {"file_path": str(bad)}}) is None
+
+
+def test_legacy_modes_mean_both():
+    config.set_mode("full")
+    assert config.parts(config.get_mode()) == {"save", "code"}
+
+
+def test_big_json_with_few_lines_gets_key_outline(repo):
+    blob = repo / "data.json"
+    blob.write_text(json.dumps({"users": ["x" * 50] * 600, "meta": {"v": 1}}))
+    out = hooks.dispatch("pre-tool-use", {"session_id": "p3", "cwd": str(repo), "tool_name": "Read",
+                                          "tool_input": {"file_path": str(blob)}})
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "key 'users'" in reason and "key 'meta'" in reason and "Grep" in reason
+
+
+def test_fresh_session_with_big_system_prompt_does_not_overwrite_memory(repo, tmp_path):
+    # Found live: a 2-line question in a new session (35k of system prompt and tools) asked for a rewrite.
+    tr = _grown(tmp_path / "q.jsonl", 35_000, 36_000)
+    assert hooks.dispatch("stop", {"session_id": "s22", "cwd": str(repo), "transcript_path": str(tr)}) is None

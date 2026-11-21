@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -49,6 +50,15 @@ def outline(path: Path, limit: int = 60) -> list[str]:
     except OSError:
         return []
     items: list[str] = []
+    if path.suffix.lower() == ".json":
+        try:
+            data = json.loads(text)
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            return [f"key {k!r}: about {len(json.dumps(v)) // 4:,} tokens" for k, v in list(data.items())[:limit]]
+        if isinstance(data, list):
+            return [f"top-level list of {len(data):,} items"]
     if path.suffix == ".py":
         try:
             tree = ast.parse(text)

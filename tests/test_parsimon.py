@@ -124,8 +124,10 @@ def test_session_start_hook_modes(tmp_path, monkeypatch):
     assert (tmp_path / "cfg" / "parsimon" / "root").exists()
     config.set_mode("off")
     assert hooks.dispatch("session-start", {"cwd": str(tmp_path)}) is None
-    config.set_mode("ultra")
-    assert "Ultra" in hooks.dispatch("session-start", {})["hookSpecificOutput"]["additionalContext"]
+    config.set_mode("code")  # code rules wait for the first edit
+    assert hooks.dispatch("session-start", {"cwd": str(tmp_path)}) is None
+    config.set_mode("save")
+    assert "search before reading" in hooks.dispatch("session-start", {})["hookSpecificOutput"]["additionalContext"]
 
 
 def test_cli_report_runs(transcripts, capsys):

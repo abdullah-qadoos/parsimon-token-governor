@@ -1,4 +1,4 @@
-"""parsimon report | audit | mode"""
+"""parsimon report | audit | mode | check | bench"""
 from __future__ import annotations
 
 import argparse
@@ -32,8 +32,8 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("audit", help="measure the boot payload re-sent every turn")
     a.add_argument("--project", type=Path, default=Path.cwd())
 
-    m = sub.add_parser("mode", help="show or set the lean mode")
-    m.add_argument("mode", nargs="?", choices=config.MODES)
+    m = sub.add_parser("mode", help="show or set which parts are on: both, save, code, off")
+    m.add_argument("mode", nargs="?", choices=config.MODES + tuple(config.LEGACY))
 
     c = sub.add_parser("check", help="run Parsimon's code checks on files")
     c.add_argument("files", nargs="+", type=Path)
@@ -63,10 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "audit":
         print(audit.render(audit.run(args.project)))
     elif args.cmd == "mode":
-        if args.mode:
-            print(f"parsimon mode: {config.set_mode(args.mode)}")
-        else:
-            print(f"parsimon mode: {config.get_mode()}")
+        mode = config.set_mode(args.mode) if args.mode else config.get_mode()
+        on = config.parts(mode)
+        print(f"parsimon: token saver {'on' if 'save' in on else 'off'}, code checks {'on' if 'code' in on else 'off'}")
     elif args.cmd == "check":
         findings = []
         for f in args.files:

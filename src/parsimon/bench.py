@@ -25,7 +25,7 @@ from pathlib import Path
 from .ledger import DEFAULT_WEIGHTS, _usage_numbers, cost_of
 
 ARMS = ("baseline", "parsimon")
-ARM_MODE = {"baseline": "off", "parsimon": "full"}
+ARM_MODE = {"baseline": "off", "parsimon": "both"}
 
 
 def load_tasks(path: Path) -> list[dict]:

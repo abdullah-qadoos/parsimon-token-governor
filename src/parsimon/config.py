@@ -1,12 +1,14 @@
-"""User settings in ~/.config/parsimon/. Only the mode and the plugin path are stored."""
+"""User settings in ~/.config/parsimon/. Only the mode (which parts are on) and the plugin path are stored."""
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
 
-MODES = ("lite", "full", "ultra", "off")
-DEFAULT_MODE = "full"
+# Two independent parts: "save" (token saver) and "code" (code-quality flags).
+MODES = ("both", "save", "code", "off")
+DEFAULT_MODE = "both"
+LEGACY = {"full": "both", "lite": "both", "ultra": "both"}  # pre-0.3 modes
 
 
 def config_dir() -> Path:
@@ -26,28 +28,39 @@ def load() -> dict:
         return {}
 
 
+def _norm(mode: str) -> str | None:
+    mode = LEGACY.get(mode.lower(), mode.lower())
+    return mode if mode in MODES else None
+
+
+def parts(mode: str) -> set[str]:
+    return {"save", "code"} if mode == "both" else set() if mode == "off" else {mode}
+
+
 def get_mode() -> str:
-    env = os.environ.get("PARSIMON_MODE", "").lower()
-    if env in MODES:
+    env = _norm(os.environ.get("PARSIMON_MODE", ""))
+    if env:
         return env
-    mode = str(load().get("mode", DEFAULT_MODE)).lower()
-    return mode if mode in MODES else DEFAULT_MODE
+    return _norm(str(load().get("mode", DEFAULT_MODE))) or DEFAULT_MODE
 
 
 def set_mode(mode: str) -> str:
-    mode = mode.lower()
-    if mode not in MODES:
+    norm = _norm(mode)
+    if not norm:
         raise ValueError(f"mode must be one of {', '.join(MODES)}")
     data = load()
-    data["mode"] = mode
+    data["mode"] = norm
     config_dir().mkdir(parents=True, exist_ok=True)
     _config_file().write_text(json.dumps(data, indent=2), encoding="utf-8")
-    return mode
+    return norm
 
 
 PROJECT_DEFAULTS = {
     "read_gate_lines": 400,  # Read of a bigger file with no line range gets an outline first
-    "handoff_at_tokens": 120_000,  # context size that triggers a handoff
+    "read_gate_bytes": 20_000,  # ...and so does any file this large (big JSON is often few lines)
+    "memory": True,  # per-project memory file, loaded on startup and /clear
+    "memory_every_tokens": 40_000,  # rewrite the memory each time this session's context grows by this much
+    "memory_max_age_days": 14,  # older memories aren't loaded automatically
     "idle_warn_tokens": 40_000,  # only warn about an expired cache if the prefix is this big
     "reuse_check": True,
     "edit_checks": True,

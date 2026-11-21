@@ -1,48 +1,42 @@
 ---
 name: parsimon
-description: Lean coding mode. Use on every coding task to write the least code that correctly solves the problem, reuse what exists, and keep context small. Also use when the user types /parsimon or asks to change the parsimon mode (lite, full, ultra, off).
+description: Parsimon token saver and code checks. Use when the user types /parsimon (both|save|code|off|report|audit|review|resume) or asks where their tokens go.
 ---
 
-# Parsimon: lean coding
+# Parsimon
 
-Parsimon's session-start hook already loads the short rules below each session. This skill holds the full version and the mode switch.
-
-## Mode switch
-
-When the user writes `/parsimon <mode>` with mode `lite`, `full`, `ultra` or `off`, save it with:
+Run the CLI as:
 
 ```bash
-$(python3 -c "" 2>/dev/null && echo python3 || echo python) "$(cat ~/.config/parsimon/root)/hooks/cli.py" mode <mode>
+PY=$(python3 -c "" 2>/dev/null && echo python3 || echo python); P="$(cat ~/.config/parsimon/root)/hooks/cli.py"
 ```
 
-then confirm the new mode in one line. `/parsimon` with no mode shows the current mode (`... mode` with no argument).
+If `~/.config/parsimon/root` doesn't exist, tell the user to start a new Claude Code session once so the plugin can register itself.
 
-## Before writing new code, stop at the first step that works
+## `/parsimon` (no argument), `both`, `save`, `code`, `off`
 
-1. Does this need to exist at all? Push back on speculative features.
-2. Does the codebase already have it? Search (`rg`) for an existing function, helper or component first.
-3. Does the language's standard library or the platform already provide it?
-4. Does an installed dependency already solve it? Don't add a new dependency for something small.
-5. Only then write the smallest correct new code.
+Two parts the user can switch on independently:
 
-## Writing rules
+- **save** (token saver): short context rules, outline-first reads of big files, expired-cache warning, cached-prefix edit warning, per-project memory (`.parsimon/memory.md`) loaded on startup and /clear.
+- **code** (code checks): lean coding rules after the first edit, reuse check for near-duplicate functions, syntax/duplicate/lint checks after edits, quality gate with the project's tests before finishing.
 
-- Edit existing functions instead of adding near-duplicates (`foo_v2`, `new_parse`, `helper2`).
-- No abstraction with a single user: no base class, factory or wrapper "for later".
-- No dead code, commented-out code or unused parameters left behind.
-- Never remove validation at trust boundaries, error handling that prevents data loss, security checks or behaviour the user asked for.
-- Non-trivial logic (branches, parsing, money, security) gets one small test that fails when it breaks.
+Run `$PY "$P" mode <both|save|code|off>` (no argument shows the current state) and repeat its one-line output. The change applies from the next hook call; rules already sent this session stay in context.
 
-## Context rules (these save the most tokens)
+## `/parsimon report`
 
-- Read only the part of a file you need: search first, then read a line range, instead of reading whole large files.
-- Keep command output short: pipe noisy commands through `tail`, `head` or `grep`, and run only the failing test, not the whole suite, while iterating.
-- Don't re-read a file you just read unless it changed.
-- Keep replies short: what changed, where, and how it was verified. No restating the plan or the code.
+Run `$PY "$P" report --days 14` (`--project <text>`, `--top N`). Reply in three lines: the biggest cost category and its share, the biggest waste it flags, one concrete change for this week.
 
-## Modes
+## `/parsimon audit`
 
-- `lite`: build what was asked, and mention a smaller alternative if there is one.
-- `full` (default): follow every rule above.
-- `ultra`: also challenge requirements that look speculative, and prefer deleting code to adding it.
-- `off`: ignore these rules.
+Run `$PY "$P" audit` from the project root. Summarise: total estimated boot tokens, the largest item, up to three cuts (move rarely needed CLAUDE.md sections into on-demand docs, disable unused MCP servers). Don't edit CLAUDE.md or MCP settings unless asked.
+
+## `/parsimon review`
+
+1. `git diff --stat`, then `git diff` (or against the base the user names). Read only changed hunks.
+2. Run `$PY "$P" check <changed code files>`.
+3. For each new function, search the repo (`rg -n "def <name>|function <name>|<name> ="`) for something that already does the job.
+4. List, most valuable first, each with file:line and one line of reasoning: **Delete** (dead code, unused params), **Reuse** (name the existing code), **Simplify** (single-use abstractions, hand-rolled stdlib), **Keep** (trust-boundary validation, data-loss handling, security). Don't apply changes unless asked; end with the estimated lines that could go.
+
+## `/parsimon resume`
+
+Read `.parsimon/memory.md` (in the home folder: the matching `.parsimon/memory/<task>.md`). If missing, say so in one line and ask what to work on. Open only what the next step needs, using line ranges. Reply in at most four lines (goal, state, next step), then start unless told to wait. `/parsimon resume save` rewrites the memory now: the whole file, under 400 words, first line `# <task> - <date>`, then goal, decisions and why, current state, files with line ranges, next step, open problems.
