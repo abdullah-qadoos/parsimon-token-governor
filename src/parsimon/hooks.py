@@ -250,12 +250,13 @@ def stop(payload: dict, on: set[str]) -> dict | None:
     if not settings["memory"]:
         return None
     snap = governor.snapshot(payload.get("transcript_path"))
-    every = int(settings["memory_every_tokens"])
-    # Count growth from where this session started (a fresh session already carries ~30k of system
-    # prompt and tools), so a quick question never overwrites a good memory.
-    if snap["context"] < st.get("memory_next", snap["first_context"] + every):
+    # Growth since this session started is the history a fresh start would drop. A fresh start re-writes
+    # ~20k of system prompt and tools, so memory + /clear only pays off once that history is large
+    # (benchmark: at ~10k it cost 13% more). Then refresh the memory every `memory_every_tokens`.
+    first = snap["first_context"] + int(settings["memory_min_history_tokens"])
+    if snap["context"] < st.get("memory_next", first):
         return None
-    st["memory_next"] = snap["context"] + every
+    st["memory_next"] = snap["context"] + int(settings["memory_every_tokens"])
     state.save(sid, st)
     try:
         memory.ensure_dir(root)

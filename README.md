@@ -20,7 +20,7 @@ Start a new session. Needs Python 3.10+ on your PATH (`python3`, or `python` on 
 | **Context rules** at session start, about 50 tokens: search before reading, read line ranges, keep output short | **Lean coding rules**, sent once **after the first edit**, so sessions that never edit code don't pay for them |
 | **Smart reads**: a text file over 400 lines or 20 KB, read with no range, gets an outline instead (functions and classes with line numbers; top-level keys and sizes for JSON). Asking again reads the whole file | **Reuse check**: an edit that adds a function like an existing one (`format_price_v2` next to `format_price`) is told where the existing one is. Retrying the same edit goes through |
 | **Cache guard**: after an idle gap longer than the cache lifetime (5 minutes, or 1 hour on the 1-hour cache) with a big context, tells you the cache expired. Also warns when CLAUDE.md or MCP config is edited mid-session | **Edit checks**: syntax errors, duplicate function bodies, `foo`/`foo_new` variants, ruff or eslint findings, in at most 8 lines. Unused imports and undefined names wait for the quality gate, since mid-edit they are usually just half-finished |
-| **Project memory**: each project keeps `.parsimon/memory.md`, a short note of where the work stands. Every time the session's context grows by 40k tokens, the agent rewrites it. On startup and `/clear` it's loaded, so a fresh session continues where the last one stopped for about 1k tokens instead of re-sending the whole conversation. In your home folder it keeps one memory per task and lists them. `.parsimon/` carries its own `.gitignore`, so it's never committed | **Quality gate**: before the agent finishes, re-checks every edited file and runs your `test_command`. The agent can't say "done" while they fail. Never loops |
+| **Project memory**: each project keeps `.parsimon/memory.md`, a short note of where the work stands. Once the session has grown by 80k tokens, the agent writes it, then rewrites it every further 40k. Below 80k, starting fresh costs more than it saves, because a new session re-saves about 20k tokens of Claude Code's own setup. On startup and `/clear` it's loaded, so a fresh session continues where the last one stopped for about 1k tokens instead of re-sending the whole conversation. In your home folder it keeps one memory per task and lists them. `.parsimon/` carries its own `.gitignore`, so it's never committed | **Quality gate**: before the agent finishes, re-checks every edited file and runs your `test_command`. The agent can't say "done" while they fail. Never loops |
 | **Boot audit warning** when CLAUDE.md files are heavy | |
 
 Both parts are on by default. With both on, Parsimon adds about 140 tokens to each request, against about 620 in v0.2.
@@ -51,6 +51,7 @@ Optional `.parsimon.json` in the project root:
   "read_gate_lines": 400,
   "read_gate_bytes": 20000,
   "memory": true,
+  "memory_min_history_tokens": 80000,
   "memory_every_tokens": 40000,
   "memory_max_age_days": 14,
   "idle_warn_tokens": 40000,

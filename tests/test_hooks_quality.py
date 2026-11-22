@@ -142,16 +142,18 @@ def _grown(path: Path, start: int, end: int, edits=()):
     return path
 
 
-def test_memory_rewrite_requested_every_40k_tokens(repo, tmp_path):
+def test_memory_written_after_80k_growth_then_every_40k(repo, tmp_path):
     payload = {"session_id": "s10", "cwd": str(repo)}
     small = _grown(tmp_path / "a.jsonl", 30_000, 60_000)  # grew 30k: not yet
     assert hooks.dispatch("stop", {**payload, "transcript_path": str(small)}) is None
-    big = _grown(tmp_path / "b.jsonl", 30_000, 75_000, edits=[str(repo / "big.py")])
+    mid = _grown(tmp_path / "m.jsonl", 30_000, 100_000)  # grew 70k: /clear would still cost more (benchmark)
+    assert hooks.dispatch("stop", {**payload, "transcript_path": str(mid)}) is None
+    big = _grown(tmp_path / "b.jsonl", 30_000, 115_000, edits=[str(repo / "big.py")])
     out = hooks.dispatch("stop", {**payload, "transcript_path": str(big)})
     assert out["decision"] == "block" and ".parsimon/memory.md" in out["reason"] and "big.py" in out["reason"]
     assert (repo / ".parsimon" / ".gitignore").read_text() == "*\n"  # git skips it; user's .gitignore untouched
     assert hooks.dispatch("stop", {**payload, "transcript_path": str(big)}) is None  # not again at the same size
-    bigger = _grown(tmp_path / "c.jsonl", 30_000, 120_000)
+    bigger = _grown(tmp_path / "c.jsonl", 30_000, 160_000)  # 40k more than the last write
     assert hooks.dispatch("stop", {**payload, "transcript_path": str(bigger)})["decision"] == "block"
 
 
@@ -180,7 +182,7 @@ def test_home_folder_lists_task_memories_and_asks_for_one_file_per_task(tmp_path
     monkeypatch.setattr(Path, "home", lambda: home)
     ctx = hooks.dispatch("session-start", {"cwd": str(home)})["hookSpecificOutput"]["additionalContext"]
     assert "qc-427.md: QC handover 427" in ctx and "long details" not in ctx  # listed, not loaded
-    tr = _grown(tmp_path / "t.jsonl", 30_000, 80_000)
+    tr = _grown(tmp_path / "t.jsonl", 30_000, 120_000)
     out = hooks.dispatch("stop", {"session_id": "s20", "cwd": str(home), "transcript_path": str(tr)})
     assert "memory/<short-task-name>.md" in out["reason"]
 

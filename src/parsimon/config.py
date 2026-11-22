@@ -59,7 +59,8 @@ PROJECT_DEFAULTS = {
     "read_gate_lines": 400,  # Read of a bigger file with no line range gets an outline first
     "read_gate_bytes": 20_000,  # ...and so does any file this large (big JSON is often few lines)
     "memory": True,  # per-project memory file, loaded on startup and /clear
-    "memory_every_tokens": 40_000,  # rewrite the memory each time this session's context grows by this much
+    "memory_min_history_tokens": 80_000,  # first memory once the session has grown this much (below it /clear costs more)
+    "memory_every_tokens": 40_000,  # then rewrite it each time the context grows by this much more
     "memory_max_age_days": 14,  # older memories aren't loaded automatically
     "idle_warn_tokens": 40_000,  # only warn about an expired cache if the prefix is this big
     "reuse_check": True,
